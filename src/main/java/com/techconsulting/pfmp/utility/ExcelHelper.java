@@ -2,7 +2,6 @@ package com.techconsulting.pfmp.utility;
 
 import com.techconsulting.pfmp.controller.InvestmentController;
 import com.techconsulting.pfmp.domain.InvestedLoan;
-import com.techconsulting.pfmp.domain.InvestmentStatus;
 import com.techconsulting.pfmp.model.InvestmentPojo;
 import com.techconsulting.pfmp.security.services.UserDetailsImpl;
 import org.apache.poi.ss.usermodel.*;
@@ -13,265 +12,342 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 public class ExcelHelper {
-    public static String TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    public static final String TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     private static final Logger LOGGER = LoggerFactory.getLogger(InvestmentController.class);
-    static String SHEET = "Sheet";
-    static Set<String> expectedHeaders = new HashSet<>();
-    static {
-        expectedHeaders.add("Loan ID");
-        expectedHeaders.add("Disbursement Date");
-        expectedHeaders.add("Disbursed Amount (₹)");
-        expectedHeaders.add("Interest Rate (%)");
-        expectedHeaders.add("Repayment Start Date (expected)");
-        expectedHeaders.add("Tenure (months)");
-        expectedHeaders.add("Repayment Type");
-        expectedHeaders.add("Principal Received (₹)");
-        expectedHeaders.add("Interest Received (₹)");
-        expectedHeaders.add("Platform Fee (₹)");
-        expectedHeaders.add("Profit & Loss (₹)");
-        expectedHeaders.add("Total Amount Received (₹)");
-        expectedHeaders.add("Total Repayment Amount (illustrative) (₹)");
-//        expectedHeaders.add("Refunded Amount (₹)");
-        expectedHeaders.add("Loan Status");
-        expectedHeaders.add("DPD (days past due)");
-        expectedHeaders.add("NPA");
+    private static final ThreadLocal<DataFormatter> DATA_FORMATTER = ThreadLocal.withInitial(() -> new DataFormatter(Locale.ROOT));
+
+    private static final String[] LOAN_ID_HEADERS = {"Loan ID"};
+    private static final String[] DATE_HEADERS = {"Disbursement Date"};
+    private static final String[] INVESTED_AMOUNT_HEADERS = {"Disbursed Amount (₹)", "Invested Amount (₹)"};
+    private static final String[] INTEREST_RATE_HEADERS = {"Interest Rate (%)", "Interest Rate (%p.a.)"};
+    private static final String[] TENURE_HEADERS = {"Tenure (months)", "Tenure (in months)"};
+    private static final String[] RECEIVED_AMOUNT_HEADERS = {"Total Amount Received (₹)", "Total Received (₹)"};
+    private static final String[] STATUS_HEADERS = {"Loan Status"};
+    private static final String[] DPD_HEADERS = {"DPD (days past due)", "DPD"};
+    private static final String[] EXPECTED_AMOUNT_HEADERS = {"Total Repayment Amount (illustrative) (₹)"};
+
+    private ExcelHelper() {
     }
 
     public static boolean hasExcelFormat(MultipartFile file) {
-        LOGGER.debug("Checking if file has Excel format: {}", file.getContentType());
-        boolean result = TYPE.equals(file.getContentType());
-        LOGGER.debug("Excel format validation result: {}", result);
-        return result;
-    }
-    public static boolean validateExcelFile(MultipartFile file) throws IOException {
-        LOGGER.debug("Validating Excel file: {}", file.getOriginalFilename());
-        if (!hasExcelFormat(file)){
-            LOGGER.warn("File does not have Excel format");
-            return  false;
+        if (file == null || file.isEmpty()) {
+            return false;
         }
-        try {
+        String contentType = file.getContentType();
+        String filename = file.getOriginalFilename();
+        return TYPE.equalsIgnoreCase(contentType)
+                || (filename != null && filename.toLowerCase(Locale.ROOT).endsWith(".xlsx"));
+    }
+
+    /**
+     * Validate the report by its workbook contents and lender ID. LenDenClub has
+     * changed the export filename and worksheet name, so neither is used as a
+     * report-format identifier.
+     */
+    public static boolean validateExcelFile(MultipartFile file) throws IOException {
+        LOGGER.debug("Validating manual lending Excel file: {}", file == null ? null : file.getOriginalFilename());
+        if (!hasExcelFormat(file)) {
+            return false;
+        }
+
+        try (Workbook workbook = new XSSFWorkbook(file.getInputStream())) {
             UserDetailsImpl user = SecurityUtil.getLoggedInUser();
-            String lender_id = (String) user.getOtherDetails().get("lendenClub_lender_id");
-            if (!Objects.requireNonNull(file.getOriginalFilename()).startsWith("MANUAL_LENDING_REPORT_"+lender_id)){
-                LOGGER.warn("File name validation failed for user: {}", user.getUsername());
+            if (user == null || user.getOtherDetails() == null) {
+                LOGGER.warn("Unable to determine the logged-in lender while validating report");
                 return false;
             }
 
-            Workbook workbook = new XSSFWorkbook(file.getInputStream());
-            Sheet sheet = workbook.getSheet(SHEET);
-
-            for (Row row : sheet) {
-                Set<String> foundHeaders = new HashSet<>();
-                for (Cell cell : row) {
-                    if (cell.getCellType() == CellType.STRING) {
-                        String cellValue = cell.getStringCellValue();
-                        if (expectedHeaders.contains(cellValue)) {
-                            foundHeaders.add(cellValue);
-                        }
-                    }
-                }
-                if (foundHeaders.size() == expectedHeaders.size() && foundHeaders.containsAll(expectedHeaders)) {
-                    LOGGER.info("Excel file validation successful");
-                    return true; // All headers found
-                }
+            Object lenderIdValue = user.getOtherDetails().get("lendenClub_lender_id");
+            String lenderId = lenderIdValue == null ? null : lenderIdValue.toString().trim();
+            if (lenderId == null || lenderId.isEmpty()) {
+                LOGGER.warn("Logged-in user does not have a LenDenClub lender ID");
+                return false;
             }
-            LOGGER.warn("Excel file validation failed - headers not found");
+
+            for (int sheetIndex = 0; sheetIndex < workbook.getNumberOfSheets(); sheetIndex++) {
+                Sheet sheet = workbook.getSheetAt(sheetIndex);
+                int headerRow = findHeaderRow(sheet);
+                if (headerRow < 0) {
+                    continue;
+                }
+
+                String reportLenderId = findReportLenderId(sheet);
+                boolean valid = lenderId.equalsIgnoreCase(reportLenderId);
+                LOGGER.info("Manual lending report validation: sheet={}, headerRow={}, lenderMatch={}",
+                        sheet.getSheetName(), headerRow, valid);
+                return valid;
+            }
+            LOGGER.warn("No supported manual lending report headers found in workbook");
             return false;
-        } catch (Exception e) {
-            LOGGER.error("Error validating Excel file", e);
+        } catch (IOException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            LOGGER.error("Error validating manual lending Excel file", e);
             throw e;
         }
     }
-    public static int findHeaderRow(Sheet sheet, Set<String> expectedHeadersss) {
-        LOGGER.debug("Finding header row in sheet");
+
+    private static String findReportLenderId(Sheet sheet) {
         for (Row row : sheet) {
-            Set<String> foundHeaders = new HashSet<>();
             for (Cell cell : row) {
-                if (cell.getCellType() == CellType.STRING) {
-                    String cellValue = cell.getStringCellValue();
-                    if (expectedHeaders.contains(cellValue)) {
-                        foundHeaders.add(cellValue);
-                    }
+                if ("User ID".equalsIgnoreCase(getStringValueSafely(cell).trim())) {
+                    return getStringValueSafely(row.getCell(cell.getColumnIndex() + 1)).trim();
                 }
             }
-            if (foundHeaders.size() == expectedHeaders.size() && foundHeaders.containsAll(expectedHeaders)) {
-                LOGGER.debug("Header row found at row number: {}", row.getRowNum());
-                return row.getRowNum(); // All headers found
+        }
+        return null;
+    }
+
+    private static int findHeaderRow(Sheet sheet) {
+        if (sheet == null) {
+            return -1;
+        }
+        for (Row row : sheet) {
+            Map<String, Integer> columns = getHeaderColumns(row);
+            if (hasRequiredColumns(columns)) {
+                return row.getRowNum();
             }
         }
-        LOGGER.warn("Header row not found in sheet");
-        return -1; // Header not found
+        return -1;
     }
+
+    private static Map<String, Integer> getHeaderColumns(Row row) {
+        Map<String, Integer> columns = new HashMap<>();
+        if (row == null) {
+            return columns;
+        }
+        for (Cell cell : row) {
+            String header = normalizeHeader(getStringValueSafely(cell));
+            if (!header.isEmpty()) {
+                columns.put(header, cell.getColumnIndex());
+            }
+        }
+        return columns;
+    }
+
+    private static boolean hasRequiredColumns(Map<String, Integer> columns) {
+        return hasAny(columns, LOAN_ID_HEADERS)
+                && hasAny(columns, DATE_HEADERS)
+                && hasAny(columns, INVESTED_AMOUNT_HEADERS)
+                && hasAny(columns, INTEREST_RATE_HEADERS)
+                && hasAny(columns, TENURE_HEADERS)
+                && hasAny(columns, RECEIVED_AMOUNT_HEADERS)
+                && hasAny(columns, STATUS_HEADERS)
+                && hasAny(columns, DPD_HEADERS);
+    }
+
+    private static boolean hasAny(Map<String, Integer> columns, String... aliases) {
+        for (String alias : aliases) {
+            if (columns.containsKey(normalizeHeader(alias))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int findColumn(Map<String, Integer> columns, String... aliases) {
+        for (String alias : aliases) {
+            Integer index = columns.get(normalizeHeader(alias));
+            if (index != null) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    private static String normalizeHeader(String value) {
+        return value == null ? "" : value.replace('\u00A0', ' ').trim()
+                .replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
+    }
+
     private static Double getNumericValueSafely(Cell cell) {
-        if (cell == null) {
+        if (cell == null || cell.getCellType() == CellType.BLANK) {
             return null;
         }
         try {
             if (cell.getCellType() == CellType.NUMERIC) {
                 double value = cell.getNumericCellValue();
-                if (Double.isNaN(value) || Double.isInfinite(value)) {
-                    LOGGER.warn("Invalid numeric value (NaN or Infinity) found in cell: {}", cell.getAddress());
-                    return null;
-                }
-                return value;
-            } else if (cell.getCellType() == CellType.STRING) {
-                String stringValue = cell.getStringCellValue().trim();
-                if (stringValue.isEmpty()) {
-                    return null;
-                }
-                try {
-                    double value = Double.parseDouble(stringValue);
-                    if (Double.isNaN(value) || Double.isInfinite(value)) {
-                        LOGGER.warn("Invalid numeric value in string cell: {}", cell.getAddress());
-                        return null;
-                    }
-                    return value;
-                } catch (NumberFormatException e) {
-                    LOGGER.warn("Could not parse numeric value from string cell: {} with value: {}", cell.getAddress(), stringValue);
-                    return null;
-                }
+                return Double.isFinite(value) ? value : null;
             }
+            String value = DATA_FORMATTER.get().formatCellValue(cell).trim();
+            if (value.isEmpty() || "-".equals(value) || "—".equals(value) || "–".equals(value)) {
+                return null;
+            }
+            value = value.replace(",", "").replace("₹", "").replace("%", "").trim();
+            double parsed = Double.parseDouble(value);
+            return Double.isFinite(parsed) ? parsed : null;
         } catch (Exception e) {
-            LOGGER.warn("Error reading numeric value from cell: {}", cell.getAddress(), e);
+            LOGGER.warn("Could not parse numeric value from cell {}", cell.getAddress(), e);
+            return null;
         }
-        return null;
     }
 
     private static String getStringValueSafely(Cell cell) {
-        if (cell == null) {
+        if (cell == null || cell.getCellType() == CellType.BLANK) {
+            return "";
+        }
+        try {
+            return DATA_FORMATTER.get().formatCellValue(cell).trim();
+        } catch (Exception e) {
+            LOGGER.warn("Could not read string value from cell {}", cell.getAddress(), e);
+            return "";
+        }
+    }
+
+    private static String getDateValueSafely(Cell cell) {
+        if (cell == null || cell.getCellType() == CellType.BLANK) {
             return null;
         }
         try {
-            if (cell.getCellType() == CellType.STRING) {
-                return cell.getStringCellValue();
-            } else if (cell.getCellType() == CellType.NUMERIC) {
-                return String.valueOf((long) cell.getNumericCellValue());
+            if (cell.getCellType() == CellType.NUMERIC && DateUtil.isCellDateFormatted(cell)) {
+                return cell.getLocalDateTimeCellValue().toLocalDate().format(DateTimeFormatter.ofPattern("dd/MM/yyyy"));
             }
+            String value = getStringValueSafely(cell);
+            if (value.isEmpty() || "—".equals(value) || "-".equals(value)) {
+                return null;
+            }
+            for (DateTimeFormatter formatter : List.of(
+                    DateTimeFormatter.ofPattern("dd/MM/yyyy"),
+                    DateTimeFormatter.ISO_LOCAL_DATE,
+                    DateTimeFormatter.ofPattern("dd-MM-yyyy"))) {
+                try {
+                    return LocalDate.parse(value, formatter).format(DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+                } catch (DateTimeParseException ignored) {
+                    // Try the next supported date format.
+                }
+            }
+            LOGGER.warn("Unrecognised disbursement date value: {}", value);
+            return null;
         } catch (Exception e) {
-            LOGGER.warn("Error reading string value from cell: {}", cell.getAddress(), e);
+            LOGGER.warn("Could not parse date from cell {}", cell.getAddress(), e);
+            return null;
         }
-        return null;
     }
 
     public static List<InvestedLoan> excelToInvestedLoans(InputStream is) {
-        LOGGER.debug("Converting Excel file to InvestedLoan list");
+        LOGGER.debug("Converting manual lending Excel report to InvestedLoan records");
         List<InvestedLoan> loans = new ArrayList<>();
+
         try (Workbook workbook = new XSSFWorkbook(is)) {
-            Sheet sheet = workbook.getSheet(SHEET);
-            int headerRowIndex = findHeaderRow(sheet, expectedHeaders);
-            if (headerRowIndex == -1) {
-                LOGGER.error("Header row not found in the sheet");
-                return new ArrayList<>();
-            }
-            System.out.println("Header row found at index: " + headerRowIndex);
-            // Process data rows below the header
-            for (int i = headerRowIndex + 1; i <= sheet.getLastRowNum(); i++) {
-                Row dataRow = sheet.getRow(i);
-                if (dataRow != null) {
-                    InvestedLoan loan = new InvestedLoan();
-                    int cellIdx = 0;
-                    for (Cell cell : dataRow) {
-                        switch (cellIdx) {
-                            case 1:
-                                loan.setSchemeId(getStringValueSafely(cell));
-                                break;
-
-                            case 2:
-                                loan.setInvestmentDate(getStringValueSafely(cell));
-                                break;
-
-                            case 3:
-                                loan.setInvestedAmount(getNumericValueSafely(cell));//disburse amt
-                                break;
-
-                            case 16:
-                                loan.setBorrowerAPRPercent(getNumericValueSafely(cell));
-                                break;
-                            case 17:
-                                loan.setTenure(getNumericValueSafely(cell));
-                                break;
-                            case 7:
-                                loan.setAmountReceived(getNumericValueSafely(cell));
-                                break;
-                            case 6:
-                                loan.setExpectedAmount(getNumericValueSafely(cell));
-                                break;
-//                            case 14:
-//                                loan.setAmountRefunded(cell.getNumericCellValue());///not present in new report
-//                                break;
-                            case 13:
-                                loan.setLoanStatus(getStringValueSafely(cell));
-                                break;
-                            case 15:
-                                Double dpdValue = getNumericValueSafely(cell);
-                                loan.setDpd(dpdValue != null ? String.valueOf(dpdValue.longValue()) : null);
-                                break;
-
-                            default:
-                                break;
-                        }
-                        cellIdx++;
-                    }
-                    if (loan.getLoanStatus().equals("NPA")) {
-                        loan.setLoanStatus("CLOSED");
-                    }
-                    if (loan.getLoanStatus() != null && "CANCELLED".equalsIgnoreCase(loan.getLoanStatus())){/// chk if any cancel in report
-//                        loan.setLoanStatus("CLOSED");
-//                        loan.setAmountReceived(loan.getAmountRefunded());
-                        continue;// skip cancelled loans
-                    }
-                    loans.add(loan);
+            Sheet reportSheet = null;
+            int headerRowIndex = -1;
+            for (int i = 0; i < workbook.getNumberOfSheets(); i++) {
+                Sheet candidate = workbook.getSheetAt(i);
+                int candidateHeaderRow = findHeaderRow(candidate);
+                if (candidateHeaderRow >= 0) {
+                    reportSheet = candidate;
+                    headerRowIndex = candidateHeaderRow;
+                    break;
                 }
             }
+
+            if (reportSheet == null) {
+                throw new IllegalArgumentException("Unsupported manual lending report: required loan columns were not found");
+            }
+
+            Map<String, Integer> columns = getHeaderColumns(reportSheet.getRow(headerRowIndex));
+            int loanIdColumn = findColumn(columns, LOAN_ID_HEADERS);
+            int dateColumn = findColumn(columns, DATE_HEADERS);
+            int investedAmountColumn = findColumn(columns, INVESTED_AMOUNT_HEADERS);
+            int interestRateColumn = findColumn(columns, INTEREST_RATE_HEADERS);
+            int tenureColumn = findColumn(columns, TENURE_HEADERS);
+            int receivedAmountColumn = findColumn(columns, RECEIVED_AMOUNT_HEADERS);
+            int statusColumn = findColumn(columns, STATUS_HEADERS);
+            int dpdColumn = findColumn(columns, DPD_HEADERS);
+            int expectedAmountColumn = findColumn(columns, EXPECTED_AMOUNT_HEADERS);
+
+            for (int rowIndex = headerRowIndex + 1; rowIndex <= reportSheet.getLastRowNum(); rowIndex++) {
+                Row dataRow = reportSheet.getRow(rowIndex);
+                if (dataRow == null) {
+                    continue;
+                }
+
+                String loanId = getStringValueSafely(dataRow.getCell(loanIdColumn));
+                Double investedAmount = getNumericValueSafely(dataRow.getCell(investedAmountColumn));
+                String loanStatus = getStringValueSafely(dataRow.getCell(statusColumn));
+
+                // Ignore blank rows, report footers and summary rows.
+                if (loanId.isEmpty() || investedAmount == null || loanStatus.isEmpty()) {
+                    continue;
+                }
+
+                if ("CANCELLED".equalsIgnoreCase(loanStatus)) {
+                    continue;
+                }
+
+                InvestedLoan loan = new InvestedLoan();
+                loan.setSchemeId(loanId);
+                loan.setInvestmentDate(getDateValueSafely(dataRow.getCell(dateColumn)));
+                loan.setInvestedAmount(investedAmount);
+                loan.setBorrowerAPRPercent(getNumericValueSafely(dataRow.getCell(interestRateColumn)));
+                loan.setTenure(getNumericValueSafely(dataRow.getCell(tenureColumn)));
+
+                // IMPORTANT: map gross Total Received, not Net Received (sent to bank).
+                // This preserves the existing portfolio calculation behaviour.
+                Double grossTotalReceived = getNumericValueSafely(dataRow.getCell(receivedAmountColumn));
+                loan.setAmountReceived(grossTotalReceived == null ? 0.0 : grossTotalReceived);
+
+                if (expectedAmountColumn >= 0) {
+                    loan.setExpectedAmount(getNumericValueSafely(dataRow.getCell(expectedAmountColumn)));
+                }
+
+                loan.setLoanStatus("NPA".equalsIgnoreCase(loanStatus) ? "CLOSED" : loanStatus.toUpperCase(Locale.ROOT));
+                Double dpd = getNumericValueSafely(dataRow.getCell(dpdColumn));
+                loan.setDpd(dpd == null ? "0" : String.valueOf(dpd.longValue()));
+                loans.add(loan);
+            }
         } catch (IOException e) {
-            LOGGER.error("An error occurred while performing the operation: {}", e.getMessage(), e);
+            LOGGER.error("An error occurred while parsing the manual lending Excel report: {}", e.getMessage(), e);
+            throw new IllegalArgumentException("Unable to read manual lending Excel report", e);
         }
+
+        if (loans.isEmpty()) {
+            throw new IllegalArgumentException("No valid loan rows were found in the manual lending report");
+        }
+        LOGGER.info("Extracted {} manual lending loans from report", loans.size());
         return loans;
     }
 
     public static List<InvestmentPojo> excelToInvestmentPojo(InputStream is) {
-        try {
-            Workbook workbook = new XSSFWorkbook(is);
+        try (Workbook workbook = new XSSFWorkbook(is)) {
             Sheet sheet = workbook.getSheet("Mother's dhan account");
+            if (sheet == null) {
+                throw new IllegalArgumentException("Sheet Mother's dhan account was not found");
+            }
             Iterator<Row> rows = sheet.iterator();
             List<InvestmentPojo> loans = new ArrayList<>();
             int rowNumber = 0;
             boolean endRead = false;
-            while (rows.hasNext()) {
-                if (endRead)
-                    break;
+            while (rows.hasNext() && !endRead) {
                 Row currentRow = rows.next();
-                // skip header
-                if (rowNumber <= 0) {
-                    rowNumber++;
+                if (rowNumber++ == 0) {
                     continue;
                 }
-                Iterator<Cell> cellsInRow = currentRow.iterator();
+
                 InvestmentPojo loan = new InvestmentPojo();
-                int cellIdx = 0;
-                while (cellsInRow.hasNext()) {
-                    if (endRead)
-                        break;
-                    Cell currentCell = cellsInRow.next();
+                for (int cellIdx = 0; cellIdx < currentRow.getLastCellNum(); cellIdx++) {
+                    Cell currentCell = currentRow.getCell(cellIdx);
                     switch (cellIdx) {
                         case 0:
                             String cellValue = getStringValueSafely(currentCell);
-                            if ("Total Investment Amount".equalsIgnoreCase(cellValue != null ? cellValue.trim() : "")) {
+                            if ("Total Investment Amount".equalsIgnoreCase(cellValue)) {
                                 endRead = true;
                                 break;
                             }
                             loan.setParticular(cellValue);
                             break;
                         case 1:
-                            Double invAmount = getNumericValueSafely(currentCell);
-                            loan.setInvAmount(invAmount);
+                            loan.setInvAmount(getNumericValueSafely(currentCell));
                             break;
                         case 3:
-                            Double marketValue = getNumericValueSafely(currentCell);
-                            loan.setMarketValue(marketValue);
+                            loan.setMarketValue(getNumericValueSafely(currentCell));
                             break;
                         case 8:
                             loan.setInvestmentStatus(getStringValueSafely(currentCell));
@@ -279,15 +355,14 @@ public class ExcelHelper {
                         default:
                             break;
                     }
-                    cellIdx++;
                 }
-                if (!endRead)
+                if (!endRead) {
                     loans.add(loan);
+                }
             }
-            workbook.close();
             return loans;
         } catch (IOException e) {
-            throw new RuntimeException("fail to parse Excel file: " + e.getMessage());
+            throw new RuntimeException("fail to parse Excel file: " + e.getMessage(), e);
         }
     }
 }
