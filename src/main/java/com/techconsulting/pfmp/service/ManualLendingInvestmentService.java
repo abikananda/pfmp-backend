@@ -108,10 +108,6 @@ public class ManualLendingInvestmentService {
                     logger.debug("New loan created and saved for SchemeId: {}", loan.getSchemeId());
                 }
                 ManualLendingInvestment dhanInvestment = manualLendingInvestmentRepository.findBySchemeIdIgnoreCaseAndManualLendingPortfolioId(loan.getSchemeId(), portfolio.get().getId());
-                Double amountReceived = loan.getAmountReceived() != null ? loan.getAmountReceived() : 0.0;
-
-                // Apply the recovery rule even when later calculations must be skipped.
-                applyRecoveryNpaOverride(dhanInvestment, amountReceived);
 
                 // LOG AND VALIDATE BEFORE CALCULATION
                 logger.debug("Investment retrieved - InvAmount: {}, Tenure: {}", dhanInvestment.getInvAmount(), dhanInvestment.getTenure());
@@ -132,6 +128,7 @@ public class ManualLendingInvestmentService {
                     manualLendingInvestmentRepository.save(dhanInvestment);
                     continue;
                 }
+            Double amountReceived = loan.getAmountReceived() != null ? loan.getAmountReceived() : 0.0;
             if (!Objects.equals(dhanInvestment.getAmtCreditInBankAccount(), amountReceived)){
                 double interestAmt = 0;
                 if (perMonthEMI <= amountReceived) {
@@ -255,10 +252,6 @@ public class ManualLendingInvestmentService {
             if (dhanInvestment.getLoanStatus().equals(InvestmentStatus.CLOSED) && dhanInvestment.getInvestmentStatus().equals(InvestmentStatus.SOLD) && dhanInvestment.getMarketValue()>dhanInvestment.getInvAmount()) {
                 dhanInvestment.setComments(dhanInvestment.getComments()+": Successfully Closed");
             }
-
-            // User rule: when gross Total Received exceeds invested principal, do not classify as NPA.
-            applyRecoveryNpaOverride(dhanInvestment, amountReceived);
-
             String name = commonRepository.getFirstNameByLoanId(loan.getSchemeId());
             if (!StringUtils.isNullOrEmpty(name)){
                 dhanInvestment.setParticular(name);
@@ -330,17 +323,6 @@ public class ManualLendingInvestmentService {
             throw e;
         }
         logger.info("========== END uploadManualLendingAndInvest ==========");
-    }
-
-    /**
-     * A loan is not NPA for this portfolio once gross total received is greater
-     * than the invested principal, even if DPD or the source status suggests NPA.
-     */
-    static void applyRecoveryNpaOverride(ManualLendingInvestment investment, double grossAmountReceived) {
-        if (investment.getInvAmount() != null && grossAmountReceived > investment.getInvAmount()) {
-            investment.setNPA(false);
-            investment.setComments("Total received exceeds invested amount; NPA not applicable");
-        }
     }
 
     private boolean loanExists(final String schemeId, final Long portfolioId) {
