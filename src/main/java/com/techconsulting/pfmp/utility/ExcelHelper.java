@@ -225,12 +225,16 @@ public class ExcelHelper {
         if (value.matches("\\d+")) {
             return value;
         }
-        if (value.matches("\\d+[-–]\\d+")) {
-            String[] bounds = value.split("[-–]");
-            return bounds[1];
+        // Only the three DPD buckets used by LenDenClub are supported.
+        // Do not generalise other ranges or plus-buckets.
+        if ("1-30".equals(value)) {
+            return "30";
         }
-        if (value.matches("\\d+\\+")) {
-            return value.substring(0, value.length() - 1);
+        if ("31-60".equals(value)) {
+            return "60";
+        }
+        if ("90+".equals(value)) {
+            return "90";
         }
         if (value.matches("\\d+\\.0+")) {
             return value.substring(0, value.indexOf('.'));
