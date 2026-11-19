@@ -4,6 +4,8 @@ import com.techconsulting.pfmp.domain.InvestedLoan;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -15,7 +17,7 @@ class ExcelHelperTest {
 
     @Test
     void parsesNewInvestmentReportAndUsesGrossTotalReceived() throws Exception {
-        byte[] report = createNewReport();
+        byte[] report = createNewReport("0");
 
         List<InvestedLoan> loans = ExcelHelper.excelToInvestedLoans(new ByteArrayInputStream(report));
 
@@ -32,6 +34,21 @@ class ExcelHelperTest {
         // Total Received is ₹277.70; Net Received is ₹270.20.
         // Existing portfolio calculations intentionally continue using gross receipts.
         assertEquals(277.70, loan.getAmountReceived(), 0.001);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+            "1-30,30",
+            "31-60,60",
+            "90+,90"
+    })
+    void parsesDpdBucketsUsingUpperBound(String dpdBucket, String expectedDpd) throws Exception {
+        byte[] report = createNewReport(dpdBucket);
+
+        List<InvestedLoan> loans = ExcelHelper.excelToInvestedLoans(new ByteArrayInputStream(report));
+
+        assertEquals(1, loans.size());
+        assertEquals(expectedDpd, loans.get(0).getDpd());
     }
 
     @Test
@@ -52,7 +69,7 @@ class ExcelHelperTest {
         assertEquals("1", loan.getDpd());
     }
 
-    private byte[] createNewReport() throws Exception {
+    private byte[] createNewReport(String dpdValue) throws Exception {
         try (XSSFWorkbook workbook = new XSSFWorkbook();
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             var sheet = workbook.createSheet("Loan Level Summary");
@@ -87,7 +104,7 @@ class ExcelHelperTest {
             data.createCell(8).setCellValue(35.52);
             data.createCell(9).setCellValue(6);
             data.createCell(11).setCellValue("ACTIVE");
-            data.createCell(12).setCellValue("0");
+            data.createCell(12).setCellValue(dpdValue);
             data.createCell(13).setCellValue(277.70);
             data.createCell(20).setCellValue(270.20);
 
