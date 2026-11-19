@@ -201,6 +201,43 @@ public class ExcelHelper {
         }
     }
 
+    /**
+     * Converts LenDenClub DPD values into an integer day count.
+     * For ranges, use the upper bound so a bucket is never silently treated as zero:
+     * 1-30 -> 30, 31-60 -> 60, 90+ -> 90.
+     */
+    private static String getDpdValueSafely(Cell cell) {
+        if (cell == null || cell.getCellType() == CellType.BLANK) {
+            return "0";
+        }
+        if (cell.getCellType() == CellType.NUMERIC) {
+            double value = cell.getNumericCellValue();
+            if (Double.isFinite(value) && value >= 0) {
+                return String.valueOf((long) value);
+            }
+            throw new IllegalArgumentException("Invalid DPD value: " + value);
+        }
+
+        String value = getStringValueSafely(cell).replaceAll("\\s+", "");
+        if (value.isEmpty() || "-".equals(value) || "—".equals(value) || "–".equals(value)) {
+            return "0";
+        }
+        if (value.matches("\\d+")) {
+            return value;
+        }
+        if (value.matches("\\d+[-–]\\d+")) {
+            String[] bounds = value.split("[-–]");
+            return bounds[1];
+        }
+        if (value.matches("\\d+\\+")) {
+            return value.substring(0, value.length() - 1);
+        }
+        if (value.matches("\\d+\\.0+")) {
+            return value.substring(0, value.indexOf('.'));
+        }
+        throw new IllegalArgumentException("Unsupported DPD value: " + value);
+    }
+
     private static String getDateValueSafely(Cell cell) {
         if (cell == null || cell.getCellType() == CellType.BLANK) {
             return null;
@@ -299,8 +336,7 @@ public class ExcelHelper {
                 }
 
                 loan.setLoanStatus("NPA".equalsIgnoreCase(loanStatus) ? "CLOSED" : loanStatus.toUpperCase(Locale.ROOT));
-                Double dpd = getNumericValueSafely(dataRow.getCell(dpdColumn));
-                loan.setDpd(dpd == null ? "0" : String.valueOf(dpd.longValue()));
+                loan.setDpd(getDpdValueSafely(dataRow.getCell(dpdColumn)));
                 loans.add(loan);
             }
         } catch (IOException e) {
