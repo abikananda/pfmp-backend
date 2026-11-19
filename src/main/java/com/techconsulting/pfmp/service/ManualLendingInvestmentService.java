@@ -108,6 +108,10 @@ public class ManualLendingInvestmentService {
                     logger.debug("New loan created and saved for SchemeId: {}", loan.getSchemeId());
                 }
                 ManualLendingInvestment dhanInvestment = manualLendingInvestmentRepository.findBySchemeIdIgnoreCaseAndManualLendingPortfolioId(loan.getSchemeId(), portfolio.get().getId());
+                Double amountReceived = loan.getAmountReceived() != null ? loan.getAmountReceived() : 0.0;
+
+                // Apply the recovery rule even when later calculations must be skipped.
+                applyRecoveryNpaOverride(dhanInvestment, amountReceived);
 
                 // LOG AND VALIDATE BEFORE CALCULATION
                 logger.debug("Investment retrieved - InvAmount: {}, Tenure: {}", dhanInvestment.getInvAmount(), dhanInvestment.getTenure());
@@ -128,7 +132,6 @@ public class ManualLendingInvestmentService {
                     manualLendingInvestmentRepository.save(dhanInvestment);
                     continue;
                 }
-            Double amountReceived = loan.getAmountReceived() != null ? loan.getAmountReceived() : 0.0;
             if (!Objects.equals(dhanInvestment.getAmtCreditInBankAccount(), amountReceived)){
                 double interestAmt = 0;
                 if (perMonthEMI <= amountReceived) {
