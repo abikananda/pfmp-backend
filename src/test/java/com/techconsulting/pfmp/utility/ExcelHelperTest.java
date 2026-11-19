@@ -12,6 +12,7 @@ import java.io.ByteArrayOutputStream;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ExcelHelperTest {
 
@@ -49,6 +50,15 @@ class ExcelHelperTest {
 
         assertEquals(1, loans.size());
         assertEquals(expectedDpd, loans.get(0).getDpd());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"61-90", "120+", "1-15"})
+    void rejectsUnsupportedDpdBuckets(String dpdBucket) throws Exception {
+        byte[] report = createNewReport(dpdBucket);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> ExcelHelper.excelToInvestedLoans(new ByteArrayInputStream(report)));
     }
 
     @Test
