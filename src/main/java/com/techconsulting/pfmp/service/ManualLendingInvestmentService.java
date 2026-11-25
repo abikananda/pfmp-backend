@@ -306,10 +306,8 @@ public class ManualLendingInvestmentService {
                 }
             }
 
-            double amtYetToBeInvest = (portfolio.get().getInvestmentPrincipalAmt() + portfolio.get().getPortfolioReturnAmt())
-                    - totalFundOnLendenInvested;
+            double amtYetToBeInvest = recalculateAmtYetToBeInvest(portfolio.get());
             logger.debug("Amount Yet To Be Invest: {}", amtYetToBeInvest);
-            portfolio.get().setAmtYetToBeInvest(amtYetToBeInvest);
 
             long totalNPA = portfolio.get().getManualLendingInvestments().stream()
                     .filter(ManualLendingInvestment::isNPA).count();
@@ -333,7 +331,10 @@ public class ManualLendingInvestmentService {
         UserDetailsImpl userDetails = SecurityUtil.getLoggedInUser();
         Optional<ManualLendingPortfolio> portfolioData = manualLendingPortfolioRepository.findByInvestmentTypeAndUserId(InvestmentType.MANUAL_LENDING, userDetails.getId());
         if (portfolioData.isPresent()) {
-            portfolioData.get().setInvestmentPrincipalAmt(portfolioData.get().getInvestmentPrincipalAmt() + amt);
+            double currentPrincipal = portfolioData.get().getInvestmentPrincipalAmt() == null
+                    ? 0.0 : portfolioData.get().getInvestmentPrincipalAmt();
+            portfolioData.get().setInvestmentPrincipalAmt(currentPrincipal + amt);
+            recalculateAmtYetToBeInvest(portfolioData.get());
             manualLendingPortfolioRepository.save(portfolioData.get());
         } else {
             ManualLendingPortfolio newDhanPortfolio = new ManualLendingPortfolio();
@@ -347,10 +348,25 @@ public class ManualLendingInvestmentService {
             newDhanPortfolio.setTotalFundOnLendenInvested(0.0);
             newDhanPortfolio.setTotalNPA(0);
             newDhanPortfolio.setInvestmentPrincipalAmt(amt);
+            recalculateAmtYetToBeInvest(newDhanPortfolio);
             newDhanPortfolio.setUser(userRepository.findById(userDetails.getId())
                     .orElseThrow(() -> new RuntimeException("User not found with username: " + userDetails.getUsername())));
             manualLendingPortfolioRepository.save(newDhanPortfolio);
         }
+    }
+
+    private double recalculateAmtYetToBeInvest(ManualLendingPortfolio portfolio) {
+        double investmentPrincipalAmt = portfolio.getInvestmentPrincipalAmt() == null
+                ? 0.0 : portfolio.getInvestmentPrincipalAmt();
+        double amountCreditInBankAccount = portfolio.getAmountCreditInBankAccount() == null
+                ? 0.0 : portfolio.getAmountCreditInBankAccount();
+        double totalInvestmentAmt = portfolio.getTotalInvestmentAmt() == null
+                ? 0.0 : portfolio.getTotalInvestmentAmt();
+
+        double availableAmount = investmentPrincipalAmt + amountCreditInBankAccount - totalInvestmentAmt;
+        double amtYetToBeInvest = Math.max(0.0, availableAmount);
+        portfolio.setAmtYetToBeInvest(amtYetToBeInvest);
+        return amtYetToBeInvest;
     }
 
     public void cleanLoanLogTable() {

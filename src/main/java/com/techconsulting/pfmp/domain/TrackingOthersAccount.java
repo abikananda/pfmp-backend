@@ -60,10 +60,10 @@ public class TrackingOthersAccount {
 
     public TrackingOthersAccount() {
         this.currentAccBalance = 0.0;
-        this.currentFYPrincipalAmt = 300000.0;//Mom's added this to make double
+        this.currentFYPrincipalAmt = 0.0;
         this.currentFYReturnPer = 0.0;
         this.currentFYReturnAmount = 0.0;
-        this.totAmtTransferToAcc = 300000.0;//Mom's added this to make double
+        this.totAmtTransferToAcc = 0.0;
         this.totalReturnPer = 0.0;
         this.totalReturnAmount = 0.0;
     }
