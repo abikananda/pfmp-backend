@@ -29,6 +29,7 @@ public class ExcelHelper {
     private static final String[] INTEREST_RATE_HEADERS = {"Interest Rate (%)", "Interest Rate (%p.a.)"};
     private static final String[] TENURE_HEADERS = {"Tenure (months)", "Tenure (in months)"};
     private static final String[] RECEIVED_AMOUNT_HEADERS = {"Total Amount Received (₹)", "Total Received (₹)"};
+    private static final String[] NET_RECEIVED_AMOUNT_HEADERS = {"Net Received (sent to bank) (₹)", "Net Received  (sent to bank) (₹)"};
     private static final String[] STATUS_HEADERS = {"Loan Status"};
     private static final String[] DPD_HEADERS = {"DPD (days past due)", "DPD"};
     private static final String[] EXPECTED_AMOUNT_HEADERS = {"Total Repayment Amount (illustrative) (₹)"};
@@ -225,16 +226,13 @@ public class ExcelHelper {
         if (value.matches("\\d+")) {
             return value;
         }
-        // Only the three DPD buckets used by LenDenClub are supported.
-        // Do not generalise other ranges or plus-buckets.
-        if ("1-30".equals(value)) {
-            return "30";
+        java.util.regex.Matcher range = java.util.regex.Pattern.compile("(\\d+)-(\\d+)").matcher(value);
+        if (range.matches()) {
+            return range.group(2);
         }
-        if ("31-60".equals(value)) {
-            return "60";
-        }
-        if ("90+".equals(value)) {
-            return "90";
+        java.util.regex.Matcher plusRange = java.util.regex.Pattern.compile("(\\d+)\\+").matcher(value);
+        if (plusRange.matches()) {
+            return plusRange.group(1);
         }
         if (value.matches("\\d+\\.0+")) {
             return value.substring(0, value.indexOf('.'));
@@ -299,7 +297,10 @@ public class ExcelHelper {
             int investedAmountColumn = findColumn(columns, INVESTED_AMOUNT_HEADERS);
             int interestRateColumn = findColumn(columns, INTEREST_RATE_HEADERS);
             int tenureColumn = findColumn(columns, TENURE_HEADERS);
-            int receivedAmountColumn = findColumn(columns, RECEIVED_AMOUNT_HEADERS);
+            int netReceivedAmountColumn = findColumn(columns, NET_RECEIVED_AMOUNT_HEADERS);
+            int receivedAmountColumn = netReceivedAmountColumn >= 0
+                    ? netReceivedAmountColumn
+                    : findColumn(columns, RECEIVED_AMOUNT_HEADERS);
             int statusColumn = findColumn(columns, STATUS_HEADERS);
             int dpdColumn = findColumn(columns, DPD_HEADERS);
             int expectedAmountColumn = findColumn(columns, EXPECTED_AMOUNT_HEADERS);
@@ -330,10 +331,9 @@ public class ExcelHelper {
                 loan.setBorrowerAPRPercent(getNumericValueSafely(dataRow.getCell(interestRateColumn)));
                 loan.setTenure(getNumericValueSafely(dataRow.getCell(tenureColumn)));
 
-                // IMPORTANT: map gross Total Received, not Net Received (sent to bank).
-                // This preserves the existing portfolio calculation behaviour.
-                Double grossTotalReceived = getNumericValueSafely(dataRow.getCell(receivedAmountColumn));
-                loan.setAmountReceived(grossTotalReceived == null ? 0.0 : grossTotalReceived);
+                // Prefer Net Received (sent to bank) so platform charges are not reinvestable.
+                Double netOrGrossReceived = getNumericValueSafely(dataRow.getCell(receivedAmountColumn));
+                loan.setAmountReceived(netOrGrossReceived == null ? 0.0 : netOrGrossReceived);
 
                 if (expectedAmountColumn >= 0) {
                     loan.setExpectedAmount(getNumericValueSafely(dataRow.getCell(expectedAmountColumn)));

@@ -12,12 +12,11 @@ import java.io.ByteArrayOutputStream;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class ExcelHelperTest {
 
     @Test
-    void parsesNewInvestmentReportAndUsesGrossTotalReceived() throws Exception {
+    void parsesNewInvestmentReportAndUsesNetReceivedAmount() throws Exception {
         byte[] report = createNewReport("0");
 
         List<InvestedLoan> loans = ExcelHelper.excelToInvestedLoans(new ByteArrayInputStream(report));
@@ -32,15 +31,17 @@ class ExcelHelperTest {
         assertEquals("ACTIVE", loan.getLoanStatus());
         assertEquals("0", loan.getDpd());
 
-        // Total Received is ₹277.70; Net Received is ₹270.20.
-        // Existing portfolio calculations intentionally continue using gross receipts.
-        assertEquals(277.70, loan.getAmountReceived(), 0.001);
+        // Net Received sent to bank excludes platform and recovery charges.
+        assertEquals(270.20, loan.getAmountReceived(), 0.001);
     }
 
     @ParameterizedTest
     @CsvSource({
             "1-30,30",
             "31-60,60",
+            "61-90,90",
+            "91-120,120",
+            "120+,120",
             "90+,90"
     })
     void parsesDpdBucketsUsingUpperBound(String dpdBucket, String expectedDpd) throws Exception {
@@ -52,14 +53,6 @@ class ExcelHelperTest {
         assertEquals(expectedDpd, loans.get(0).getDpd());
     }
 
-    @ParameterizedTest
-    @CsvSource({"61-90", "120+", "1-15"})
-    void rejectsUnsupportedDpdBuckets(String dpdBucket) throws Exception {
-        byte[] report = createNewReport(dpdBucket);
-
-        assertThrows(IllegalArgumentException.class,
-                () -> ExcelHelper.excelToInvestedLoans(new ByteArrayInputStream(report)));
-    }
 
     @Test
     void continuesToParseLegacyManualLendingReport() throws Exception {
